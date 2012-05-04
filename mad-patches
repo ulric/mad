@@ -1,0 +1,147 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+=head1 NAME
+
+mad-patches
+
+=head1 ABSTRACT
+
+A script to get the ifTable and ifXTable info from switches supporting the MIBs.
+
+=head1 SYNOPSIS
+
+ mad-patches OPTIONS agent agent ...
+
+ mad-patches OPTIONS -i <agents.txt
+
+=head2 OPTIONS
+
+  -c snmp_community
+  -v snmp_version
+  -t snmp_timeout
+  -r snmp_retries
+
+  -d			Net::SNMP debug on
+  -i			read agents from stdin, one agent per line
+  -b			blocking
+
+=cut
+
+use Net::SNMP qw(:debug :snmp);
+use Net::SNMP::Mixin qw/mixer init_mixins/;
+
+use Getopt::Std;
+
+our $VERSION = 2;
+
+my %opts;
+getopts( 'ibdt:r:c:v:', \%opts ) or usage();
+
+my $debug     = $opts{d} || undef;
+my $community = $opts{c} || 'free4rd';
+my $version   = $opts{v} || '2';
+my $blocking  = $opts{b};
+my $timeout   = $opts{t} || 5;
+my $retries   = $opts{r} || 0;
+
+my $from_stdin = $opts{i} || undef;
+
+my @agents = @ARGV;
+push @agents, <STDIN> if $from_stdin;
+chomp @agents;
+usage('missing agents') unless @agents;
+
+my @sessions;
+foreach my $agent ( sort @agents ) {
+  my ( $session, $error ) = Net::SNMP->session(
+    -community   => $community,
+    -hostname    => $agent,
+    -version     => $version,
+    -nonblocking => !$blocking,
+    -timeout     => $timeout,
+    -retries     => $retries,
+    -debug       => $debug ? DEBUG_ALL : 0,
+  );
+
+  if ($error) {
+    warn $error;
+    next;
+  }
+
+  $session->mixer(qw/Net::SNMP::Mixin::IfInfo/);
+  $session->init_mixins;
+  push @sessions, $session;
+}
+snmp_dispatcher() if $Net::SNMP::NONBLOCKING;
+
+# remove sessions with error from the sessions list
+@sessions = grep { warn $_->error if $_->error; not $_->error } @sessions;
+
+print_if();
+exit 0;
+
+###################### end of main ######################
+
+sub print_if {
+
+  foreach my $session ( sort { $a->hostname cmp $b->hostname } @sessions ) {
+
+    print "\n";
+    printf "Hostname: %-25.25s\n", $session->hostname;
+
+    print '-' x 95, "\n";
+    printf "%5s %5s %6s %10s %43s %21s\n",
+      'ifIdx', 'ad/op', 'ifName', 'ifDesc', 'ifAlias', 'ifType';
+    print '-' x 95, "\n";
+
+    my $if_entries = $session->get_if_entries;
+    foreach my $if_index ( sort { $a <=> $b } keys %$if_entries ) {
+      my $ifAdminStatus = $if_entries->{$if_index}->{ifAdminStatus} || 0;
+      my $ifOperStatus  = $if_entries->{$if_index}->{ifOperStatus}  || 0;
+      my $ifName        = $if_entries->{$if_index}->{ifName}        || '';
+      my $ifDescr       = $if_entries->{$if_index}->{ifDescr}       || '';
+      my $ifType        = $if_entries->{$if_index}->{ifType}        || '';
+      my $ifAlias       = $if_entries->{$if_index}->{ifAlias}       || '';
+
+      next unless $ifType == 6;
+
+      printf "%5d  %1d/%1d  %-10.10s %-25.25s %-42.42s %2d\n", $if_index,
+        $ifAdminStatus, $ifOperStatus, $ifName, $ifDescr, $ifAlias, $ifType;
+    }
+    print "\n";
+  }
+}
+
+sub usage {
+  my @msg = @_;
+  die <<EOT;
+>>>>>> @msg
+    Usage: $0 [options] hostname
+   
+    	-c community
+  	-v version
+  	-t timeout
+  	-r retries
+  	-d		Net::SNMP debug on
+	-i		read agents from stdin
+  	-b		blocking
+EOT
+}
+
+=head1 AUTHOR
+
+Karl Gaissmaier, karl.gaissmaier (at) uni-ulm.de
+
+=head1 COPYRIGHT
+
+Copyright (C) 2008 by Karl Gaissmaier
+
+This program is free software; you can redistribute it and/or modify it
+under the same terms as Perl itself.
+
+=cut
+
+# vim: sw=2
